@@ -1,0 +1,20 @@
+\begin{table}[ht]
+\centering
+\caption{Component ablation of our memory (rolling protocol). Each row removes one component; ``FinMem'' removes all of them.}
+\label{tab:ablation}
+\begin{tabular}{lrrrrr}
+\hline
+Variant & CR (\%) & Sharpe & $\Delta$Sharpe & MDD (\%) & IC \\
+\hline
+Ours & -3.56 & -0.20 &  & -15.18 & +0.003 \\
+w/o contradiction (N3) & 0.78 & 0.13 & +0.33 & -12.79 & +0.002 \\
+w/o credibility (N1) & -3.90 & -0.22 & -0.03 & -18.62 & -0.038 \\
+w/o data importance (N5) & -6.60 & -0.47 & -0.28 & -13.96 & -0.017 \\
+w/o dedup (N2) & -0.75 & 0.02 & +0.22 & -15.91 & +0.008 \\
+w/o episodic recall (N7) & -2.47 & -0.10 & +0.10 & -25.10 & +0.003 \\
+w/o peer graph (N6) & -7.75 & -0.52 & -0.32 & -19.29 & +0.001 \\
+w/o situational query (N4) & -11.91 & -0.90 & -0.70 & -20.43 & +0.006 \\
+FinMem & -10.98 & -0.72 & -0.52 & -19.69 & -0.000 \\
+\hline
+\end{tabular}
+\end{table}

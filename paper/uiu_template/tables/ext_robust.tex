@@ -1,0 +1,19 @@
+\begin{table}[H]
+\centering
+\small
+\caption{Robustness to the stock set: Sharpe with all ten stocks, without Tesla, and on FinMem's five stocks.}
+\label{tab:ext-robust}
+\begin{tabular}{lrrr}
+\toprule
+Model & 10 stocks & without TSLA & FinMem's 5 \\
+\midrule
+Buy \& Hold & +0.61 & +0.67 & -0.34 \\
+LGBM (price) & +1.15 & +0.92 & +0.74 \\
+Ours & -0.20 & +0.23 & +0.28 \\
+FinMem & -0.72 & -0.43 & -1.59 \\
+Plain RAG & -0.65 & -0.10 & -1.59 \\
+Transformer (price) & +0.95 & +0.79 & +0.77 \\
+RL Q-learning & +0.39 & +0.59 & -0.77 \\
+\bottomrule
+\end{tabular}
+\end{table}

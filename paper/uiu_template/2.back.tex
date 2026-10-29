@@ -1,0 +1,105 @@
+\chapter{Background}
+\label{ch:back}
+
+This chapter provides the background needed for the rest of the report: financial text signals, embeddings, retrieval and memory for LLM agents, the layered FinMem architecture that serves as our main baseline, the sequence models, reinforcement learning, pattern matching and portfolio-construction methods used as additional baselines, and the statistics used to evaluate trading strategies. It then reviews related applications and research and summarises the gap this project addresses.
+
+\section{Preliminaries}
+
+\subsection{Returns and performance measures}
+For a stock with closing prices $P_t$, the simple daily return is $r_t = P_t/P_{t-1}-1$. A strategy that holds position $p_t\in\{-1,0,1\}$ from the close of day $t$ to the close of day $t+1$ earns $p_t r_{t+1}$ minus a proportional cost $c\,|p_t-p_{t-1}|$; we use $c=5$ basis points. From the daily net returns we compute the cumulative return (CR), the annualised Sharpe ratio $\sqrt{252}\,\bar r/\sigma_r$, the Sortino ratio (downside deviation in the denominator), annualised volatility and the maximum drawdown (MDD), the largest peak-to-trough fall of the equity curve. Buy-and-hold (B\&H) always holds $p_t=1$.
+
+\subsection{Financial sentiment and sentence embeddings}
+FinBERT~\cite{araci2019finbert} is a BERT model fine-tuned on financial phrases that outputs positive, negative and neutral probabilities; we use the polarity $s = p_{+}-p_{-}\in[-1,1]$. Sentence-Transformers~\cite{reimers2019sbert} map a text to a dense vector such that semantically similar texts have high cosine similarity; we use the compact MiniLM model~\cite{wang2020minilm} (384 dimensions). Classic studies show that news tone predicts short-horizon returns but that much of the effect reverses~\cite{tetlock2007giving,chan2003stock}, and that short-term reversal is a robust feature of equity returns~\cite{jegadeesh1990evidence}.
+
+\subsection{Retrieval-augmented and memory-augmented LLM agents}
+Retrieval-augmented generation (RAG)~\cite{lewis2020rag} retrieves the documents most similar to a query and places them in the prompt. Generative Agents~\cite{park2023generative} rank an agent's memory stream by a sum of recency, relevance and importance and add periodic reflections. Later systems manage memory hierarchically (MemGPT~\cite{packer2023memgpt}) or learn from verbal feedback on past attempts (Reflexion~\cite{shinn2023reflexion}).
+
+\subsection{FinMem: the layered baseline}
+\label{sec:finmem-bg}
+FinMem~\cite{yu2023finmem} adapts the Generative-Agents score to finance. Each memory event $E$ belongs to a layer $l\in\{\text{shallow},\text{intermediate},\text{deep}\}$ and is scored for a query $P$ as
+\begin{equation}
+\gamma^E_l = S^E_{\text{Recency},l} + S^E_{\text{Relevancy},l} + S^E_{\text{Importance},l},
+\end{equation}
+with $S_{\text{Recency}}=e^{-\delta/Q_l}$ ($\delta$ = age in days, $Q=14,90,365$), $S_{\text{Relevancy}}$ the cosine similarity of the embeddings, and $S_{\text{Importance}} = v_l\,\alpha_l^{\delta}$ where $v_l\in\{40,60,80\}$ is drawn with layer-specific probabilities and $\alpha=0.9,0.967,0.988$. Events are purged when recency falls below $0.05$ or importance below $5$. An access counter adds 5 importance points to memories that proved pivotal, and memories whose importance passes a threshold move to a deeper layer with their recency reset. The top-$K=5$ events of every layer, the recent price momentum and a self-adaptive risk character (risk-seeking after gains, risk-averse after losses) are given to GPT-4 to choose Buy, Sell or Hold.
+
+\subsection{Statistical evaluation of trading strategies}
+Daily returns are non-normal and autocorrelated, and many strategy variants are usually tried. We therefore use the Wilcoxon signed-rank test~\cite{wilcoxon1945} on paired daily returns (as FinMem did), Holm's step-down correction for multiple comparisons~\cite{holm1979}, the Diebold--Mariano test of equal predictive accuracy~\cite{diebold1995}, a moving-block bootstrap~\cite{kunsch1989} for confidence intervals of Sharpe-ratio differences~\cite{ledoit2008}, and the Spearman information coefficient (IC) between a signal and the next-day return. Bailey and L\'opez de Prado~\cite{bailey2014deflated} show that back-test performance is inflated by selection, which motivates our walk-forward design and our explicit reporting of post-hoc variants.
+
+\subsection{Sequence models: recurrent networks and Transformers}
+\label{sec:seq-bg}
+A recurrent network reads a window of feature vectors $x_{t-L+1},\dots,x_t$ one step at a time and keeps a hidden state. The gated recurrent unit (GRU)~\cite{cho2014gru}, a lighter relative of the LSTM~\cite{hochreiter1997lstm}, updates
+\begin{equation}
+z_t=\sigma(W_z[x_t,h_{t-1}]),\quad \rho_t=\sigma(W_\rho[x_t,h_{t-1}]),\quad
+\tilde h_t=\tanh(W_h[x_t,\rho_t\odot h_{t-1}]),\quad h_t=(1-z_t)\odot h_{t-1}+z_t\odot\tilde h_t ,
+\end{equation}
+so the update gate $z_t$ decides how much of the past to keep. A Transformer~\cite{vaswani2017attention} instead lets every position look at every other position through \emph{self-attention}. With queries, keys and values $Q=HW_Q$, $K=HW_K$, $V=HW_V$ computed from the sequence of hidden vectors $H$,
+\begin{equation}
+\operatorname{Attention}(Q,K,V)=\operatorname{softmax}\!\Big(\frac{QK^\top}{\sqrt{d_k}}\Big)V ,
+\end{equation}
+and several such heads run in parallel, followed by a position-wise feed-forward layer, residual connections and layer normalisation. Because attention is order-free, a learned positional embedding is added to the input. The attention weights show which past days the model relied on, which makes them a useful diagnostic. In finance, LSTMs were among the first deep models to beat simple baselines on daily stock returns~\cite{fischer2018lstm}, Temporal Fusion Transformers~\cite{lim2021tft} and PatchTST~\cite{nie2023patchtst} adapt attention to forecasting, but Zeng et al.~\cite{zeng2023transformers} show that simple linear models often match Transformers on time series, so a fair comparison with tree models is essential. Gu, Kelly and Xiu~\cite{gu2020ml} find that tree ensembles and neural networks extract real but small predictive signals from price-based features.
+
+\subsection{Reinforcement learning and Q-learning}
+\label{sec:rl-bg}
+Reinforcement learning (RL)~\cite{sutton2018rl} models trading as a Markov decision process: in state $s_t$ the agent picks an action $a_t$, receives a reward $r_{t+1}$ and moves to $s_{t+1}$. The action-value $Q(s,a)$ is the expected discounted sum of future rewards when taking $a$ in $s$ and acting well afterwards. Tabular Q-learning~\cite{watkins1992q} learns it from experience with the update
+\begin{equation}
+Q(s_t,a_t)\leftarrow Q(s_t,a_t)+\alpha\big[r_{t+1}+\gamma\max_{a'}Q(s_{t+1},a')-Q(s_t,a_t)\big],
+\label{eq:qlearning}
+\end{equation}
+with learning rate $\alpha$ and discount $\gamma$, while an $\varepsilon$-greedy policy explores random actions with probability $\varepsilon$. RL for trading goes back to direct reinforcement~\cite{moody2001learning} and deep variants~\cite{deng2017deep}; FinRL~\cite{liu2020finrl} packages deep RL agents such as PPO~\cite{schulman2017ppo}. A known difficulty is that market rewards are very noisy, so an agent may learn little that generalises.
+
+\subsection{Nearest-neighbour pattern matching}
+Analogue or nearest-neighbour forecasting~\cite{cover1967nn} predicts the future of the current price pattern from what followed the most similar past patterns. It formalises the chart-pattern intuition of technical analysis, which Lo, Mamaysky and Wang~\cite{lo2000technical} studied with non-parametric methods, finding some incremental information in certain patterns. We measure similarity by the Pearson correlation of z-normalised log-price windows and weight the outcomes of the $k$ nearest windows by their similarity.
+
+\subsection{Portfolio construction and factor exposure}
+Mean--variance optimisation~\cite{markowitz1952} chooses weights $w$ that trade off expected return against variance $w^\top\Sigma w$; its minimum-variance special case needs only the covariance matrix $\Sigma$. Because expected returns are hard to estimate, DeMiguel et al.~\cite{demiguel2009naive} show that the naive $1/N$ portfolio is hard to beat out of sample. Risk parity~\cite{maillard2010erc} sets each asset's contribution to portfolio risk $w_i(\Sigma w)_i/w^\top\Sigma w$ to be equal; its simple inverse-volatility form $w_i\propto 1/\sigma_i$ ignores correlations. The CAPM~\cite{sharpe1964capm} decomposes a strategy's return as $r_t=\alpha+\beta\,r^{m}_t+\epsilon_t$: $\beta$ measures exposure to the market and $\alpha$ the return that the market does not explain. A strategy with a negative $\beta$ will lag buy-and-hold in a rising market even if its decisions carry some skill, so we report $\alpha$ and $\beta$ alongside raw returns.
+
+\subsection{Statistical power}
+A test's power is the probability of detecting an effect that truly exists~\cite{cohen1988power}. For a mean daily return difference $\mu$ with standard deviation $\sigma$ over $n$ days, a two-sided test at level 5\% with 80\% power needs roughly $n \approx \big((z_{0.975}+z_{0.8})\,\sigma/\mu\big)^2$ observations. Sharpe ratios estimated from one year of daily data have wide sampling error~\cite{lo2002sharpe}, and when many strategies are tried the chance of a spurious winner grows~\cite{harvey2016cross,bailey2014deflated}. A non-significant result on a short sample is therefore inconclusive rather than proof of no effect.
+
+\section{Literature Review}
+
+\subsection{Similar Applications}
+\begin{itemize}
+  \item \textbf{Broker and charting platforms} (e.g.\ TradingView, Alpaca's dashboard) offer charts, technical indicators and order entry but no reasoning over news memory.
+  \item \textbf{News-sentiment screeners} display headline tone per ticker but do not retain or reconcile past information, and do not explain which evidence drives a signal.
+  \item \textbf{LLM ``copilot'' assistants} answer questions about a stock from search results, but retrieval is stateless, there is no evaluation of their decisions, and they are not connected to a controlled execution path.
+  \item \textbf{Open-source agent frameworks} such as FinRL~\cite{liu2020finrl} (reinforcement learning on numeric features) and FinGPT~\cite{yang2023fingpt} (data pipelines and fine-tuned financial LLMs) are research toolkits rather than inspectable decision-support applications.
+\end{itemize}
+Our application differs by exposing exactly the memory that was evaluated in the study, the evidence and its credibility, a model consensus, and a human-approved paper-trading path.
+
+\subsection{Related Research}
+\paragraph{LLMs for return prediction.} Lopez-Lira and Tang~\cite{lopezlira2023chatgpt} report that ChatGPT's headline scores predict next-day returns, with the effect concentrated in small stocks and decaying over time. FinGPT~\cite{yang2023fingpt} provides financial LLM pipelines.
+\paragraph{LLM trading agents.} FinMem~\cite{yu2023finmem} introduces layered memory and character design; FinAgent~\cite{zhang2024finagent} adds multimodal inputs and tool use; TradingAgents~\cite{xiao2024tradingagents} organises several LLM roles (analysts, researchers, trader, risk manager) as a firm. These works generally evaluate on a single test period of a few months.
+\paragraph{Learning-based trading.} Deep reinforcement learning agents (PPO~\cite{schulman2017ppo}, DQN, A2C, as packaged in FinRL~\cite{liu2020finrl}) and gradient-boosted trees such as LightGBM~\cite{ke2017lightgbm} are standard numeric baselines.
+\paragraph{Deep learning for return prediction.} LSTM networks~\cite{fischer2018lstm} and large comparisons of machine-learning methods~\cite{gu2020ml} find small but real predictive content in price-based features; Transformer forecasters~\cite{lim2021tft,nie2023patchtst} are strong on long horizons, but their advantage over simple models is contested~\cite{zeng2023transformers}.
+\paragraph{Portfolio construction.} Out-of-sample comparisons favour simple, robust allocation rules ($1/N$, risk parity) over estimated mean--variance optima~\cite{demiguel2009naive,maillard2010erc}.
+\paragraph{Memory for agents.} Generative Agents~\cite{park2023generative}, MemGPT~\cite{packer2023memgpt} and Reflexion~\cite{shinn2023reflexion} study memory ranking, hierarchical memory and learning from feedback, but do not model source reliability or contradictions in a noisy news stream.
+
+\section{Gap Analysis}
+\begin{table}[ht]
+\centering
+\caption{Capabilities of FinMem and of the proposed memory.}
+\label{tab:gap}
+\small
+\begin{tabular}{p{0.28\textwidth}p{0.3\textwidth}p{0.33\textwidth}}
+\hline
+Aspect & FinMem & This work \\
+\hline
+Source reliability & all sources in a layer equal & N1: online hierarchical credibility \\
+Re-reported stories & stored repeatedly & N2: merged, counted as corroboration \\
+Contradicted facts & remain until decay & N3: retired by semantic contradiction \\
+Retrieval query & fixed task prompt & N4: conditioned on the day's news \\
+Importance & random draw by layer & N5: attention surprise $\times$ confidence \\
+Related companies & ignored & N6: point-in-time co-mention graph \\
+Learning from outcomes & reflections (text) & N7: episodic recall and abstention \\
+Evaluation & one window, no costs & two protocols, costs, 10 stocks, tests \\
+Model families & LLM vs.\ a few RL agents & memory, rules, ML, GRU, Transformer, Q-learning, analogues on one protocol \\
+Robustness & -- & CAPM $\alpha/\beta$, stock-set, regime and power analysis \\
+Deployment & research code & safe-autonomy app: budget guardrails, approval queue, kill switch \\
+\hline
+\end{tabular}
+\end{table}
+Table~\ref{tab:gap} summarises the gap. Beyond the memory itself, no prior work we are aware of re-evaluates FinMem on recent data under a point-in-time, cost-aware, walk-forward protocol and reports the predictive content of the memory signal separately from trading profit.
+
+\section{Summary}
+We reviewed the measures, models and statistics used in this report, described the layered FinMem baseline in detail, introduced the sequence models, reinforcement learning, pattern matching and portfolio-construction methods used as additional baselines, surveyed related applications and research, and identified seven memory capabilities, an evaluation gap and a deployment gap that the rest of the report addresses.

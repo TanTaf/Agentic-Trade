@@ -1,0 +1,15 @@
+\begin{table}[ht]
+\centering
+\caption{Predictive content of each memory signal (Spearman IC vs.\ next-day market-adjusted return, rolling test period) and memory operations over the full run (ten tickers).}
+\label{tab:icops}
+\small
+\begin{tabular}{lrrrrrrrr}
+\hline
+System & IC & $p$ & IC (cross-sect.) & Items & Merged & Retired & Promoted & Purged \\
+\hline
+Plain RAG & -0.037 & 0.08 & -0.040 & 36,177 & 0 & 0 & 0 & 0 \\
+FinMem & -0.000 & 0.99 & -0.007 & 36,177 & 0 & 0 & 1,221 & 32,625 \\
+Ours & +0.003 & 0.90 & +0.015 & 33,917 & 2,260 & 667 & 1,510 & 29,417 \\
+\hline
+\end{tabular}
+\end{table}

@@ -1,0 +1,31 @@
+\chapter{Conclusion}
+\label{ch:concl}
+
+This chapter summarises the work, discusses its limitations and outlines future work.
+
+\section{Summary}
+We designed a self-correcting agent memory for LLM trading agents and evaluated it on a point-in-time dataset of 23{,}247 news articles, 93 SEC filings and daily prices for ten stocks over September 2025 -- October 2026, against a faithful re-implementation of FinMem and other baselines. On top of a layered long-term memory, it adds hierarchical online source credibility, duplicate consolidation, contradiction retirement, a situational query, data-driven importance, a co-mention peer graph and outcome-aware episodic recall. Under a rolling walk-forward evaluation with transaction costs, our memory was the best of the evaluated memory architectures (Sharpe $-0.20$ versus $-0.72$ for FinMem, maximum drawdown $-15.2\%$ versus $-19.7\%$) and turned FinMem's own five stocks from a $-28.6\%$ loss into a $+3.5\%$ gain. With three LLM backbones reading the retrieved context, our memory also beat FinMem's context with every backbone and roughly halved the drawdown. These improvements are not statistically significant; the next-day predictive content of every news-memory signal was close to zero; and buy-and-hold and a price-only LightGBM model performed better in this period. Results also changed sign between a fixed split and the rolling protocol and varied strongly with the number of retrieved memories. Five additional model families evaluated on the same protocol support the same picture: a small price-only Transformer was competitive with buy-and-hold (Sharpe $0.95$, smallest drawdown), adding our news-memory features lowered its Sharpe to $0.09$ just as they lowered LightGBM's, a Q-learning agent mostly followed the market, and an apparently strong chart-pattern result was fragile across settings. Robustness analyses showed that our memory beats FinMem in 9 of 10 leave-one-stock-out comparisons, that the gap to buy-and-hold is largely due to a negative market beta in a rising year, and that about 47 years of daily data would be needed to establish the observed edge over FinMem at conventional significance. Our main conclusions are therefore that (i) agent memory design measurably changes the retrieved context (fresher, credibility-weighted, with duplicates merged and contradicted facts retired) and the risk profile of the agent, and verifying memories against source reliability and past outcomes works above all as a risk control; (ii) LLM trading agents should be evaluated walk-forward, with costs and significance tests, before any claim of outperformance; and (iii) under such an evaluation, the gains reported for existing layered memory do not transfer to recent data. We packaged the agent in a bilingual application for non-specialist users that exposes its evidence and every algorithm's out-of-sample record, advises how to split a budget, and lets the agent act autonomously only inside user-defined guardrails, with a human-approval mode as the default.
+
+\section{Limitation}
+\begin{itemize}
+  \item \textbf{Period and universe}: about one year and ten liquid large caps; results may differ for small caps, other markets or longer horizons.
+  \item \textbf{Signals}: headline-level FinBERT polarity and numeric XBRL summaries replace FinMem's GPT-generated summaries of full articles and filings; richer text could carry more information.
+  \item \textbf{Decision horizon}: only next-day close-to-close trading was evaluated; news may matter more at intraday or multi-week horizons.
+  \item \textbf{LLM experiment}: free-tier limits restricted it to three backbones, five stocks, 50 sessions and one trial per model at temperature 0; the backbones agree on only about a quarter of the decisions, so more trials and models are needed.
+  \item \textbf{Statistical power}: 227 sessions are too few to detect small daily differences; non-significance does not prove equality.
+  \item \textbf{Post-hoc analysis}: one variant (signed credibility) and two combinations (risk overlay, model vote) were designed after seeing test results; they are reported separately and excluded from the main conclusions.
+  \item \textbf{Model capacity}: the GRU and Transformer are deliberately small and the Q-learning agent uses a coarse 36-state description of the market; larger models and richer states need far more data than one year of daily bars.
+  \item \textbf{Multiple comparisons in the extensions}: twelve models were compared; the best one (pattern analogues) is exactly the kind of winner that selection inflates, which is why its sensitivity grid is reported.
+  \item \textbf{Application}: the autopilot was tested on a paper account and with unit tests; it has not been operated over a long live period, and exchange holidays are not modelled in its market-hours check.
+\end{itemize}
+
+\section{Future Work}
+\begin{itemize}
+  \item Extend the data to several years and a broader universe, and evaluate multi-day and intraday horizons where news effects may be stronger.
+  \item Summarise full articles and filing text with an LLM to enrich memory, and measure whether richer memory changes the predictive content.
+  \item Use the memory as a risk overlay (position sizing, abstention) on top of a price model rather than as a stand-alone signal, as suggested by the drawdown effect of N1 and N7 and by the exploratory overlay that cut LightGBM's drawdown from $-17.2\%$ to $-11.6\%$; this must be tested on new data because it was defined after the results were known.
+  \item Pre-register an extension of the test window with a fixed end date and evaluate the frozen models on it, and pool evidence across more stocks and markets to approach the sample sizes the power analysis calls for.
+  \item Replace the tabular Q-learning agent with deep RL (e.g.\ PPO) on richer states once several years of data are available, and evaluate pre-trained time-series Transformers.
+  \item Run multi-trial LLM experiments with paid inference and compare reasoning and non-reasoning models.
+  \item Add live forward testing on the paper account to complement back-tests.
+\end{itemize}

@@ -1,0 +1,445 @@
+\chapter{Implementation and Results}
+\label{ch:impl}
+
+This chapter describes the software environment and implementation, how the system was tested, and the experimental results: overall performance under both protocols, statistical tests, per-ticker and FinMem-universe results, predictive content, ablations, sensitivity analyses, retrieval diagnostics, the LLM-backbone comparison, the extension models (GRU, Transformer, reinforcement learning, pattern analogues), portfolio construction, robustness and power analyses, and the evaluation of the application.
+
+\section{Environment Setup}
+\begin{itemize}
+  \item \textbf{Hardware}: a laptop with an 8-core CPU and 8\,GB RAM; no GPU is required (FinBERT and MiniLM run on CPU; annotating 23{,}247 articles took about 50 minutes, a full replay of 16 memory configurations about 15 minutes).
+  \item \textbf{Software}: Python 3.13, pandas, NumPy, SciPy, scikit-learn, LightGBM, PyTorch (CPU), Hugging Face Transformers and Sentence-Transformers, Matplotlib; the web server uses only the Python standard library and the front end is plain HTML, CSS and JavaScript with hand-written SVG charts.
+  \item \textbf{External services}: Alpaca Market Data (news and SIP bars) and Alpaca paper trading, SEC EDGAR XBRL API, Groq and OpenRouter free tiers. Credentials are read from a local \texttt{.env} file that is excluded from version control.
+  \item \textbf{Code organisation} (\texttt{src/agentic\_trade/study}): \texttt{data.py} (download, alignment, incremental refresh), \texttt{annotate.py}, \texttt{memory.py} (all memories and N1--N7 flags), \texttt{backtest.py} (day-major replay), \texttt{policies.py}, \texttt{evaluation.py}, \texttt{pipeline.py} (protocols), \texttt{llm\_agent.py}, \texttt{figures.py}; the extension experiments are in \texttt{study/extensions.py}. The application consists of \texttt{dashboard\_server.py} (HTTP API), \texttt{agent\_service.py} (research agent), \texttt{autopilot.py} (budget, guardrails, permission modes, scheduler), \texttt{analytics.py} (pattern analogues, risk, correlation, allocation, Monte Carlo), \texttt{algorithms.py} (algorithm board and Q-learning agent) and \texttt{credentials.py} (API-key management), and a front end split into \texttt{core.js} (navigation, global stock, language, theme), \texttt{i18n.js} (about 750 English/Bangla strings), \texttt{charts.js}, \texttt{trade.js}, \texttt{autopilot.js}, \texttt{analytics.js}, \texttt{app.js} and \texttt{credentials.js}. Scripts \texttt{build\_dataset.py}, \texttt{run\_study.py}, \texttt{run\_llm\_study.py}, \texttt{run\_extensions.py}, \texttt{make\_extension\_figures.py}, \texttt{export\_latex\_tables.py}, \texttt{export\_extension\_tables.py} and \texttt{capture\_app\_screens.py} reproduce the dataset, results, figures, tables and screenshots in this report.
+\end{itemize}
+
+The replay is \emph{day-major}: all tickers advance together, so information shared across tickers (source credibility) can only contain outcomes that were already public. Each memory keeps its items in pre-allocated NumPy arrays, so a retrieval is a masked matrix--vector product followed by a per-layer partial sort.
+
+\section{Testing and Evaluation}
+The repository contains \testcount{} automated tests (pytest), all passing. The study-specific tests check:
+\begin{itemize}
+  \item point-in-time alignment (an article at 15:59 New York time belongs to the same session, at 16:01 to the next; weekend news to Monday);
+  \item that retrieval never returns future items and that FinMem retrieves per layer;
+  \item FinMem's decay constants, purge rule and access-counter promotion with recency reset;
+  \item that duplicates are merged and contradictions retired only in our memory, never in FinMem;
+  \item credibility shrinkage (an unseen author inherits the category estimate);
+  \item episodic recall requiring at least five similar episodes;
+  \item Hold-keeps-position semantics and transaction-cost accounting;
+  \item non-overlapping splits, metric and Holm-correction helpers;
+  \item the application's consensus rule (agreement, disagreement, abstention, weak price signals) and that the agent brief is built from the research memory.
+\end{itemize}
+Tests added for the extensions and the application check:
+\begin{itemize}
+  \item the Q-learning agent cannot look ahead: changing the last five days of prices leaves every earlier decision and the learning curve unchanged, and it is deterministic for a fixed seed;
+  \item pattern analogues only use windows whose outcome was already known and never overlap the window being matched; an always-long analogue strategy reproduces buy-and-hold exactly;
+  \item the guardrail sizes buys by the tightest of target, cash above reserve and order cap; blocks buys (but not exits) after the daily-loss or drawdown limit; enforces allowed stocks and trades per day; and the emergency stop cancels the queue and prevents re-enabling;
+  \item every permission mode routes decisions as specified, approvals are re-checked and proposals expire;
+  \item budget-split plans respect the reserve and the per-stock cap for every method, and their rebalancing amounts are consistent with current holdings;
+  \item API keys are validated before saving, stored with owner-only permissions, never returned unmasked, and the endpoints refuse cross-origin and foreign-host requests;
+  \item the experience log of the algorithm board is internally consistent (a long position is ``right'' exactly when the next-day return is positive).
+\end{itemize}
+Legacy tests cover the paper-trading adapter, risk limits, LLM output parsing and the dashboard APIs. Every view of the application was also exercised end to end in a headless browser in both languages and both themes, on desktop and phone widths, with the browser console checked for errors. The front-end dictionary is checked automatically: every key used in the HTML or JavaScript exists in both languages and every placeholder appears in both translations.
+
+\section{Results and Discussion}
+
+\subsection{Overall performance}
+Table~\ref{tab:main} reports the primary rolling protocol and Figure~\ref{fig:equity} the equity curves. Among the three memory architectures, ours has the highest Sharpe ratio, the smallest loss and the smallest drawdown; FinMem and flat retrieval behave almost identically. However, all three news-memory policies lose money over the period, while buy-and-hold and, above all, the price-only LightGBM earn positive returns. Adding memory features to LightGBM \emph{reduces} its Sharpe ratio, indicating that the memory features mostly add noise for a tree model fitted on a few thousand observations.
+
+\input{tables/main_rolling}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig03_equity_portfolio.pdf}
+\caption{Equal-weight ten-stock portfolio under the rolling protocol, net of costs, with drawdowns.}
+\label{fig:equity}
+\end{figure}
+
+Two properties explain much of the gap to buy-and-hold. First, our memory abstains (keeps its position instead of acting on the signal) on 49\% of ticker-days because the episodic memory reports that similar situations were mis-signalled. Second, because Hold keeps the previous position, the memory policies are always invested, and ours is short on 58\% of ticker-days (FinMem 29\%, Plain RAG 43\%) in a market that rose over the period: its portfolio beta is $-0.33$ against $+0.64$ for FinMem (Figure~\ref{fig:positions}).
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.75\textwidth]{fig17_positions.pdf}
+\caption{Share of long, flat and short ticker-days in the test period.}
+\label{fig:positions}
+\end{figure}
+
+\subsection{Statistical significance}
+Table~\ref{tab:tests} compares ours with every baseline. Ours earns 3.4 basis points per day more than FinMem and has a Sharpe ratio higher by about 0.5, but the 95\% bootstrap interval of the difference contains zero and the Wilcoxon test is far from significance ($p=0.39$). The only Holm-significant differences are against the 1-day momentum rule and against trading on the day's headline tone without memory, i.e.\ memory is significantly better than reacting to today's news alone. Figure~\ref{fig:bootstrap} shows the bootstrap distributions.
+
+\input{tables/tests}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig15_bootstrap.pdf}
+\caption{Moving-block bootstrap distribution of the Sharpe difference between ours and FinMem (left) and Plain RAG (right).}
+\label{fig:bootstrap}
+\end{figure}
+
+\subsection{FinMem's own stocks and per-ticker results}
+On the five stocks FinMem was designed and evaluated on (Table~\ref{tab:finmem5}, Figure~\ref{fig:finmem5}), the difference is larger: FinMem and Plain RAG lose about 29\% while ours gains 3.5\%, also beating buy-and-hold ($-11.6\%$). Per ticker (Table~\ref{tab:perticker}, Figure~\ref{fig:heatmap}) the picture is mixed: ours is the best memory on NFLX, MSFT and COIN, but worse than FinMem on AMD, META, NVDA and TSLA. Such dispersion is expected when the underlying signal is weak.
+
+\input{tables/finmem5}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig04_equity_finmem5.pdf}
+\caption{Portfolio of FinMem's five stocks under the rolling protocol.}
+\label{fig:finmem5}
+\end{figure}
+
+\input{tables/per_ticker}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig06_heatmap_sharpe.pdf}
+\caption{Per-ticker Sharpe ratio of all strategies.}
+\label{fig:heatmap}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig05_per_ticker.pdf}
+\caption{Per-ticker cumulative returns of buy-and-hold and the three memories.}
+\label{fig:perticker}
+\end{figure}
+
+\subsection{Predictive content of the memory}
+Table~\ref{tab:icops} shows the Spearman IC between each memory signal and the next-day market-adjusted return. All values are within $\pm 0.04$ and none is significant at 5\%; flat retrieval of the most recent headlines is, if anything, slightly contrarian ($-0.037$, $p=0.08$), consistent with short-term reversal after news~\cite{chan2003stock,jegadeesh1990evidence}. This is the central empirical finding of the re-evaluation: in 2025--26, for these liquid large caps, the polarity of the retrieved news carries almost no information about the next day's move once it is public at the close, and FinMem's premise that better-organised news memory yields better daily trades does not hold on this data. The rolling 40-day Sharpe ratio (Figure~\ref{fig:rolling}) and monthly returns (Figure~\ref{fig:monthly}) confirm that relative performance changes sign across regimes.
+
+\input{tables/ic_ops}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{fig12_information_coefficient.pdf}
+\caption{Information coefficient of the memory signals, including ablated variants.}
+\label{fig:ic}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig11_rolling_sharpe.pdf}
+\caption{40-day rolling Sharpe ratio.}
+\label{fig:rolling}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{fig16_monthly.pdf}
+\caption{Monthly portfolio returns.}
+\label{fig:monthly}
+\end{figure}
+
+\subsection{Ablation study}
+Table~\ref{tab:ablation} and Figure~\ref{fig:ablation} remove one component at a time. The situational query (N4), the peer graph (N6) and data-driven importance (N5) contribute most to the Sharpe ratio. Removing episodic recall (N7) slightly increases the Sharpe ratio but raises the maximum drawdown from $-15.2\%$ to $-25.1\%$, and removing credibility (N1) raises it to $-18.6\%$: these two components act mainly as risk controls. Removing duplicate consolidation (N2) or contradiction retirement (N3) \emph{improves} the threshold policy; their benefit is in the quality and diversity of the context rather than in the aggregated polarity, which matters for an LLM reader but not for a polarity average. Given the noise level, differences of a few tenths of a Sharpe point should not be over-interpreted.
+
+\input{tables/ablation}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig08_ablation.pdf}
+\caption{Change in Sharpe ratio and cumulative return when a component is removed.}
+\label{fig:ablation}
+\end{figure}
+
+\subsection{Sensitivity analyses}
+\paragraph{Working-memory capacity.} Table~\ref{tab:topk} and Figure~\ref{fig:topk} vary $K$. Performance is non-monotonic and the spread across $K$ (FinMem: $-0.72$ to $2.27$) is larger than the difference between architectures at $K=5$; with $K=1$ FinMem performs best of all configurations. We kept FinMem's $K=5$ fixed in advance and report this sensitivity as a warning: choosing $K$ on the test period would be a form of selection bias~\cite{bailey2014deflated}.
+
+\input{tables/topk}
+
+\begin{figure}[H]
+\centering
+\begin{minipage}{0.48\textwidth}\centering
+\includegraphics[width=\textwidth]{fig09_topk.pdf}
+\caption{Sharpe ratio versus top-$K$.}
+\label{fig:topk}
+\end{minipage}\hfill
+\begin{minipage}{0.48\textwidth}\centering
+\includegraphics[width=\textwidth]{fig10_costs.pdf}
+\caption{Sharpe ratio versus transaction cost.}
+\label{fig:costs}
+\end{minipage}
+\end{figure}
+
+\paragraph{Transaction costs.} The memory policies trade rarely (turnover 0.06--0.16 position units per day). Ours remains the best memory at every cost level from 0 to 30\,bps, while FinMem overtakes Plain RAG above about 8\,bps because Plain RAG trades twice as often (Figure~\ref{fig:costs}). The high-turnover LightGBM with memory features falls from a Sharpe ratio of 0.94 without costs to $-2.0$ at 30\,bps.
+
+\paragraph{Fixed-split protocol.} Under the single test window of FinMem's design (Table~\ref{tab:fixed}), the ranking reverses: FinMem's validation-selected threshold ($\theta=0.4$) makes it almost always long, which matches buy-and-hold in a rising market, while ours, with $\theta=0.15$, trades more and loses. On the validation period itself ours had the highest IC of the three memories (0.087 versus 0.065 for FinMem and $-0.006$ for Plain RAG), and this ranking did not survive into the test period. The contrast between the two protocols is the strongest argument for walk-forward evaluation of trading agents.
+
+\input{tables/main_fixed}
+
+\subsection{Retrieval diagnostics}
+Figure~\ref{fig:retrieval} characterises the retrieved context. Flat retrieval returns the most redundant context (mean pairwise similarity 0.45, against 0.36 for FinMem and 0.37 for ours) and only same-day news; FinMem's context is the oldest (mean age 58 days, dominated by filings and promoted items); ours retrieves fresher memories (26 days) while still covering all three layers. Over the run our memory merged 2{,}260 re-reported stories and retired 667 contradicted ones (Table~\ref{tab:icops}, Figure~\ref{fig:memdyn}). Learned credibility (Figure~\ref{fig:cred}) stays close to 0.5 for most categories; analyst notes (0.45) are the least reliable next-day guide and options-activity reports the most (0.64, but with only 80 observations).
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig13_retrieval_diagnostics.pdf}
+\caption{Retrieval diagnostics: redundancy, age, polarity conflict and layer composition of the retrieved context.}
+\label{fig:retrieval}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig18_memory_dynamics.pdf}
+\caption{Active memory size over time and memory operations.}
+\label{fig:memdyn}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\begin{minipage}{0.55\textwidth}\centering
+\includegraphics[width=\textwidth]{fig14_credibility.pdf}
+\caption{Learned category credibility (N1).}
+\label{fig:cred}
+\end{minipage}\hfill
+\begin{minipage}{0.42\textwidth}\centering
+\includegraphics[width=\textwidth]{fig19_peer_graph.pdf}
+\caption{Co-mention graph used by N6.}
+\label{fig:peers}
+\end{minipage}
+\end{figure}
+
+\subsection{LLM backbones}
+Table~\ref{tab:llm} and Figure~\ref{fig:llm} report the LLM experiment: three free Groq backbones read the context retrieved by each memory (or none) for FinMem's five stocks over the last 50 test sessions (17 August -- 26 October 2026), 2{,}250 decisions in total, all parsed successfully. With every backbone, the context from our memory gives a higher return and a smaller drawdown than FinMem's context: $+2.55\%$ versus $-12.00\%$ (gpt-oss-120b), $+1.33\%$ versus $-10.70\%$ (gpt-oss-20b) and $-1.34\%$ versus $-4.79\%$ (qwen3.8-27b), with maximum drawdowns roughly halved ($-6.3/-4.8/-5.8\%$ versus $-14.7/-10.7/-10.7\%$). Pooled over backbones, the advantage over FinMem is 20.9 basis points per day but not significant (Wilcoxon $p=0.12$), and the advantage over the memory-less prompt is small and inconsistent (qwen3.8-27b does best without memory). None of the configurations clearly beats buy-and-hold over this short window ($+3.9\%$). In the action mix, our context (which includes the episodic-recall warning) makes gpt-oss-20b and qwen3.8-27b hold more often than FinMem's context (73\% and 92\% versus 61\% and 70\% Hold), while gpt-oss-120b holds equally often with both (45--46\%), so the gain is not only a matter of trading less. The three backbones agree on the same action in only 26\% of the decisions, so the choice of backbone is itself a large source of variance.
+
+\input{tables/llm}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig20_llm_backbones.pdf}
+\caption{LLM backbones deciding from the same retrieved memory.}
+\label{fig:llm}
+\end{figure}
+
+\section{Extension Models: Deep Learning, Reinforcement Learning and Pattern Matching}
+\label{sec:ext-results}
+The main study compares memory architectures with rule and gradient-boosting baselines. To test whether its conclusions depend on the model family, we evaluated five more models on exactly the same protocol (Section~\ref{sec:ext-design}): a GRU, a Transformer on price features, the same Transformer with our memory features, a tabular Q-learning agent and a nearest-neighbour pattern model, plus two exploratory combinations defined after the main results were known. The whole extension run (33 monthly network fits per model, ten Q-learning agents and ten analogue back-tests) took 531 seconds on the laptop CPU.
+
+\subsection{Overall comparison}
+Table~\ref{tab:ext-main} and Figures~\ref{fig:zoo-equity}--\ref{fig:zoo-sharpe} summarise all models. Four observations stand out.
+\begin{enumerate}
+  \item \textbf{A small Transformer on price features is competitive.} It earned $+11.6\%$ (Sharpe $0.95$) with the smallest drawdown of all models ($-7.9\%$), roughly on par with buy-and-hold ($+11.2\%$, $0.61$) and below the price-only LightGBM ($+19.4\%$, $1.15$). The GRU was weaker ($0.28$).
+  \item \textbf{Adding news-memory features hurts learned models.} Giving the same Transformer our memory features lowered its Sharpe from $0.95$ to $0.09$ and deepened its drawdown from $-7.9\%$ to $-18.0\%$. This replicates, with a completely different model class, the main study's finding that memory features lower LightGBM's Sharpe (1.15 to 0.44). The evidence that next-day information in news memory is close to zero is therefore not specific to one model.
+  \item \textbf{Reinforcement learning learned little that generalises.} The Q-learning agent earned $+4.4\%$ (Sharpe $0.39$), below buy-and-hold. It held a (long-only) position on 54\% of stock-days and its portfolio has a market beta of $0.84$, so its result largely follows the market.
+  \item \textbf{The pattern model had the highest Sharpe ($1.45$), but the result is fragile} (Section~\ref{sec:analogs}): its default settings happen to be the best of nine combinations, and five of the nine are negative.
+\end{enumerate}
+None of these differences is statistically significant (Table~\ref{tab:ext-tests}): all 95\% bootstrap intervals for the Sharpe difference against buy-and-hold, LightGBM and our memory contain zero, and the smallest Wilcoxon $p$-value is $0.085$ (the exploratory model vote against our memory). The exploratory risk overlay, which keeps LightGBM's position but stays in cash when our memory abstains, cut LightGBM's drawdown from $-17.2\%$ to $-11.6\%$ and its volatility from 19\% to 11\% at the cost of return (Sharpe $1.03$ versus $1.15$), consistent with the earlier observation that episodic recall works more as a risk control than as a signal; because it was designed after the main results, it is a hypothesis for future work, not a finding.
+
+\input{tables/ext_main}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig21_model_zoo_equity.pdf}
+\caption{Growth of \$1 for all model families on the same 10-stock, 227-day test (equal weight, after costs).}
+\label{fig:zoo-equity}
+\end{figure}
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig22_model_zoo_sharpe.pdf}
+\caption{Sharpe ratio of every model with its 95\% moving-block bootstrap interval. All intervals overlap zero and each other.}
+\label{fig:zoo-sharpe}
+\end{figure}
+
+\begin{figure}[!htbp]
+\centering
+\appshot{app_zoo_paper.png}
+\caption{The same comparison in the application's Research lab.}
+\label{fig:ui-zoo}
+\end{figure}
+
+\input{tables/ext_tests}
+
+\subsection{What the neural networks learned}
+Figure~\ref{fig:deep-training} looks inside the networks. On the held-out last 15\% of each training set, the validation loss never fell clearly below that of a coin flip ($\ln 2 = 0.693$): the best validation losses averaged $0.683$ (GRU), $0.689$ (Transformer) and $0.693$ (Transformer with memory), and early stopping chose epoch 7 on average for the Transformer. The training loss of the memory-augmented Transformer fell much faster than that of the price-only one while its validation loss rose, the signature of over-fitting to extra features that do not generalise. The attention of the decision day over the 20-day window is almost uniform (the dotted line marks $1/20$); the price-only Transformer puts slightly more weight on the most recent five days (25.6\% versus 24.8\% on the oldest five). In short, the networks found only a faint next-day signal, and their trading results should be read with that in mind.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig23_deep_training.pdf}
+\caption{Deep models: (a) training and validation loss per epoch averaged over refits; (b) attention of the decision day over the 20-day window; (c) size of the training set at each monthly refit and the epoch chosen by early stopping.}
+\label{fig:deep-training}
+\end{figure}
+
+\subsection{Reinforcement-learning agent}
+Figure~\ref{fig:rl} shows the Q-learning agent. Its pre-training reward per decision fluctuates between passes instead of rising steadily, because each pass explores differently and daily rewards are dominated by noise. After 30 passes and the online updates of the test window, the agent had learned from 42{,}320 transitions and visited 25 of the 36 possible situations. Per stock it beat buy-and-hold on four stocks, AAPL (Sharpe $2.03$ versus $1.05$), AMD ($2.09$ versus $1.86$), MSFT and COIN, and lost on the other six, most clearly on NVDA, GOOGL and TSLA (Table~\ref{tab:ext-per-ticker}). The learned policy (panel c) is mostly ``stay invested'', with a strong exception: when the stock has fallen over five days, is below its 20-day average and RSI is neutral, the agent prefers to sell what it holds. The application exposes the same agent per stock, with its Q-table, its decision log and the reward of every decision (Figure~\ref{fig:ui-rl}).
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig24_rl_agent.pdf}
+\caption{Q-learning agent: (a) average reward per decision in each pre-training pass; (b) Sharpe ratio per stock against buy-and-hold in the test period; (c) learned preference for holding over cash, $Q(\text{Long})-Q(\text{Flat})$, in each market situation (averaged over the ten stock-specific agents).}
+\label{fig:rl}
+\end{figure}
+
+\input{tables/ext_per_ticker}
+
+\subsection{Pattern analogues}
+\label{sec:analogs}
+Figure~\ref{fig:analogs} repeats the pattern model for every combination of pattern length (10, 20, 40 days) and look-ahead (5, 10, 20 days) on a common test period. Averaged over the ten stocks, five of the nine settings have a negative Sharpe ratio, two more are close to zero (0.01 and 0.04), and only one setting, the 20-day pattern with a 10-day look-ahead (0.50), beats the average buy-and-hold Sharpe ratio of 0.35; even that setting beats buy-and-hold on just 6 of 10 stocks. The default (20-day pattern, 10-day look-ahead, chosen for the application before any test) happens to be the best cell. We therefore do not claim that chart patterns predict returns: the strong portfolio result of Table~\ref{tab:ext-main} is the kind of outcome that the multiple-testing literature~\cite{harvey2016cross,bailey2014deflated} warns about. For a single stock the picture can be much worse; on TSLA alone the same settings lost $50\%$, and the forecasts were negatively correlated with what happened next (Figure~\ref{fig:ui-pattern}).
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig25_pattern_analogs.pdf}
+\caption{Robustness of the pattern model: (a) mean Sharpe over the ten stocks for every pattern length and look-ahead, compared with buy-and-hold; (b) number of stocks on which each setting beat buy-and-hold.}
+\label{fig:analogs}
+\end{figure}
+\begin{figure}[!htbp]
+\centering
+\appshot{app_pattern_paper_1.png}
+\caption{Pattern finder in the application (TSLA): the latest 20-day pattern (bold) against the most similar past windows and what followed, the verdict, the daily back-test against buy-and-hold and the robustness grid.}
+\label{fig:ui-pattern}
+\end{figure}
+\begin{figure}[!htbp]
+\ContinuedFloat
+\centering
+\appshot{app_pattern_paper_2.png}
+\caption[]{(continued)}
+\end{figure}
+
+\section{Portfolio Construction}
+\label{sec:alloc-results}
+The application advises how to split a budget across stocks (Section~\ref{sec:autopilot-design}). Table~\ref{tab:ext-alloc} and Figure~\ref{fig:alloc} compare the methods walk-forward: every 21 trading days the weights are recomputed from the previous 120 days only, with 80\% of the budget invested and at most 25\% per stock. Equal weight ($+10.7\%$, Sharpe $0.77$) and risk parity ($+9.2\%$, $0.75$) did better than minimum variance ($+5.1\%$, $0.51$), which concentrated in a few calm stocks (up to the 25\% cap in AAPL); all three had similar drawdowns of about $-12\%$. This matches the classic out-of-sample result that naive diversification is hard to beat~\cite{demiguel2009naive}. Investing the same 80\% in the S\&P 500 was the best risk-adjusted choice ($+10.0\%$, Sharpe $1.26$, drawdown $-7.1\%$): the ten technology-heavy stocks are highly correlated (Figure~\ref{fig:market-risk}), so splitting money among them diversifies less than holding the broad market. The application shows these numbers next to its suggestion so that the user sees this trade-off.
+
+\input{tables/ext_alloc}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig26_allocation.pdf}
+\caption{Budget-split methods: (a) walk-forward growth with monthly rebalancing; (b) weights each method suggests today.}
+\label{fig:alloc}
+\end{figure}
+\begin{figure}[!htbp]
+\centering
+\appshot{app_split_paper_1.png}
+\caption{Budget split in the application: method choice, suggested amounts per stock with the trades needed to reach them, plan statistics and the walk-forward comparison.}
+\label{fig:ui-split}
+\end{figure}
+\begin{figure}[!htbp]
+\ContinuedFloat
+\centering
+\appshot{app_split_paper_2.png}
+\caption[]{(continued)}
+\end{figure}
+
+\section{Robustness and Statistical Power}
+\label{sec:robust}
+
+\subsection{Market exposure (CAPM)}
+Raw returns mix skill with market exposure. Table~\ref{tab:ext-capm} and Figure~\ref{fig:capm} decompose every strategy's daily portfolio return into a market beta and an annualised alpha against the S\&P 500. The equal-weight basket of our ten stocks has a beta of $1.62$: buy-and-hold is a leveraged bet on the market and its alpha is negative ($-10.8\%$). Our memory has a \emph{negative} beta ($-0.33$, because it is short 58\% of the time) and a small positive alpha ($+2.3\%$), whereas FinMem has a positive beta ($0.64$) and a clearly negative alpha ($-21.7\%$). In a year in which the market rose, a negative beta explains most of the gap between our memory and buy-and-hold. The largest alphas belong to the price-only LightGBM ($+23.2\%$, $t=1.18$), the Transformer ($+14.9\%$, $t=1.03$) and the pattern model ($+11.2\%$); none is statistically significant ($|t|<2$).
+
+\input{tables/ext_capm}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{fig27_capm_alpha_beta.pdf}
+\caption{Market beta and annualised CAPM alpha of every strategy against the S\&P 500.}
+\label{fig:capm}
+\end{figure}
+
+\subsection{Does Tesla drive the result?}
+Tesla fell $5.3\%$ over the test window and was the stock on which our memory did worst (Sharpe $-1.39$). Table~\ref{tab:ext-robust} and Figure~\ref{fig:robust} recompute the portfolio without it. Our memory improves from $-0.20$ to $+0.23$ and FinMem from $-0.72$ to $-0.43$, but the ranking does not change: buy-and-hold ($0.67$), LightGBM ($0.92$) and the Transformer ($0.79$) remain ahead. Leaving out each stock in turn, our memory beats FinMem in 9 of 10 cases (the exception is leaving out COIN), and the Sharpe advantage ranges from $-0.34$ to $+1.11$ around the full-sample $+0.52$. The comparison between memories is therefore not an artefact of one stock, while the conclusion that news memory does not beat buy-and-hold also holds without Tesla. Choosing the end of the test period by waiting for any stock to recover would bias the evaluation and was deliberately avoided.
+
+\input{tables/ext_robust}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig28_robustness.pdf}
+\caption{Robustness: (a) Sharpe ratio on all ten stocks, without Tesla and on FinMem's five stocks; (b) Sharpe advantage of our memory over FinMem when one stock is left out (dashed line: all ten stocks).}
+\label{fig:robust}
+\end{figure}
+
+\subsection{Market regimes}
+Table~\ref{tab:ext-regimes} and Figure~\ref{fig:regimes} split the test days by whether the S\&P 500 rose (117 days) or fell (110 days). Buy-and-hold gains about 100 basis points on up days and loses about 95 on down days. Our memory and the Transformer behave in the opposite way, losing slightly on up days and gaining 16--19 basis points on down days, and LightGBM gains a little on both (6 and 11 basis points); FinMem and the Q-learning agent follow the market. Models that hedge market falls are attractive as diversifiers, but over a rising year they lag buy-and-hold.
+
+\input{tables/ext_regimes}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig30_regimes.pdf}
+\caption{Average daily result on days when the S\&P 500 rose versus fell.}
+\label{fig:regimes}
+\end{figure}
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig32_monthly_models.pdf}
+\caption{Monthly returns of the main models in the test period.}
+\label{fig:monthly-models}
+\end{figure}
+
+\subsection{Statistical power}
+How much data would we need to prove that our memory beats FinMem? The daily difference between the two portfolios averages $\powerMean$ basis points with a standard deviation of $\powerSd$ basis points. With $\powerN$ days, a two-sided test at the 5\% level has 80\% power only for differences of at least $\powerMde$ basis points per day, seven times larger than the observed one. Detecting the observed edge with 80\% power would need about $\powerNeed$ trading days, roughly $\powerYears$ years (Figure~\ref{fig:power}). No realistic extension of the test period, and certainly not waiting a few weeks for a stock to recover, can turn this comparison into a significant result. The honest conclusion is that the memory comparison is \emph{directionally consistent} (positive in 9 of 10 leave-one-out cases, on FinMem's own stocks and with every LLM backbone) but \emph{statistically inconclusive}.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{fig29_power.pdf}
+\caption{Smallest daily return difference detectable with 80\% power as a function of the number of test days, compared with the observed difference between our memory and FinMem.}
+\label{fig:power}
+\end{figure}
+
+\subsection{Risk profile of the universe}
+Table~\ref{tab:ext-stock-risk} and Figure~\ref{fig:market-risk} describe the stocks themselves. Annualised volatility ranges from 25\% (AAPL) to 69\% (COIN and AMD); COIN fell 64\% from its peak. The pairwise correlations are moderate (mostly 0.1--0.5), while the stocks' correlations with the S\&P 500 and Nasdaq-100 reach 0.6--0.7, so a large part of every stock's movement is common market risk. These numbers also explain why risk-parity weights favour AAPL and MSFT and give little to COIN and AMD.
+
+\input{tables/ext_stock_risk}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig31_market_risk.pdf}
+\caption{Market structure: (a) correlation of daily returns over the full history; (b) volatility, maximum drawdown and one-day 95\% value-at-risk of each stock.}
+\label{fig:market-risk}
+\end{figure}
+
+\section{The Application}
+\label{sec:app-results}
+The application operationalises these findings. Because no single signal is reliable, its default recommendation is a conservative consensus: the memory action and the price-model vote must not disagree, the price model votes only when $|P(\text{up})-0.5|\ge 0.03$, episodic abstention forces Hold, and confidence is capped at 0.6. The LLM sees exactly the context used in the study and must cite memory IDs, which the interface highlights so that the user can verify the rationale. A refresh action downloads new news, prices and filings, annotates only the new items and replays the memory.
+
+\paragraph{Safe autonomy.} The AI Autopilot (Figure~\ref{fig:ui-autopilot}) can run on a schedule during U.S.\ market hours, but every order passes the hard guardrail of Section~\ref{sec:autopilot-design}, and the default permission mode asks the user to approve each trade. In testing, the guardrail correctly sized orders by the tightest limit, blocked new buys after the daily-loss or drawdown limit while still allowing exits, refused stocks outside the allowed list, expired unanswered proposals and re-checked approvals; the emergency stop cancelled the queue and prevented the autopilot from being restarted until the user resumed trading. A safety gap of the earlier prototype was found and closed during this work: in Alpaca mode, agent orders used to bypass the position and loss limits because those were only implemented in the local simulator; all agent orders now pass the same guardrail regardless of the broker.
+\paragraph{Insights for non-specialists.} The Insights page turns the analyses of this chapter into interactive tools for the selected stock: the budget split (Figure~\ref{fig:ui-split}), the pattern finder (Figure~\ref{fig:ui-pattern}), a Monte Carlo ``what-if'' that resamples historical days to show the distribution of future account values (Figure~\ref{fig:ui-whatif}), a risk report and a correlation matrix (Figure~\ref{fig:ui-risk}), and the algorithm board (Figures~\ref{fig:ui-algo}--\ref{fig:ui-rl}). The board answers the question users most often ask about an AI recommendation, ``how often has this been right?'': for each of 18 algorithms it shows today's call next to its out-of-sample hit rate, return, Sharpe ratio and full decision log, read directly from the study's results file.
+
+\begin{figure}[!htbp]
+\centering
+\appshot{app_whatif_paper.png}
+\caption{What-if: where the money is today (allocation and share of risk) and 2{,}000 simulated futures of the account value.}
+\label{fig:ui-whatif}
+\end{figure}
+\begin{figure}[!htbp]
+\centering
+\appshot{app_risk_paper.png}
+\caption{Risk tab for COIN: distribution of daily returns against a normal curve, value-at-risk and drawdown history.}
+\label{fig:ui-risk}
+\end{figure}
+\begin{figure}[!htbp]
+\centering
+\appshot{app_algorithms_board_paper_1.png}
+\caption{Algorithm board for NVDA: what each of 18 algorithms says today, with its out-of-sample record and a growth sparkline; the box names the experience data file.}
+\label{fig:ui-algo}
+\end{figure}
+\begin{figure}[!htbp]
+\ContinuedFloat
+\centering
+\appshot{app_algorithms_board_paper_2.png}
+\caption[]{(continued)}
+\end{figure}
+\begin{figure}[!htbp]
+\centering
+\appshot{app_experience_paper.png}
+\caption{Experience log of one algorithm: every decision, the position held, the next-day move and whether it was right.}
+\label{fig:ui-experience}
+\end{figure}
+\begin{figure}[!htbp]
+\centering
+\appshot{app_rl_paper_1.png}
+\caption{The Q-learning agent in the application: how it works in four steps, today's situation and Q-values, learning curve, test against buy-and-hold, learned Q-table and its most recent experiences.}
+\label{fig:ui-rl}
+\end{figure}
+\begin{figure}[!htbp]
+\ContinuedFloat
+\centering
+\appshot{app_rl_paper_2.png}
+\caption[]{(continued)}
+\end{figure}
+
+\paragraph{Usability and quality.} The interface is available in English and Bangla (about 750 strings, checked automatically for completeness), in light and dark themes and on phones (Figure~\ref{fig:ui-mobile}). Figure~\ref{fig:ui-home-bn} shows the Home page of Figure~\ref{fig:ui-home} in Bangla: every label, explanation and status message is translated, while prices and percentages keep Latin digits so that numbers stay unambiguous. Testing in a headless browser also revealed and fixed several defects: the trade chart showed Tesla's prices for five of the ten stocks and drew synthetic candles (it now uses the real daily bars of each stock), two ``sell'' buttons called functions that did not exist, ``limit'' and ``stop'' order types were silently executed as market orders (they were removed), and two pages shared element identifiers so that one page's chart was drawn into another. API keys can be added from the interface and are verified with the provider before they are stored; the browser never receives a full key.
+
+\begin{figure}[!htbp]
+\centering
+\appshot{app_home_bn_paper.png}
+\caption{The Home page of Figure~\ref{fig:ui-home} in Bangla.}
+\label{fig:ui-home-bn}
+\end{figure}
+
+\section{Summary}
+We implemented and tested the full pipeline, five extension models and the application. Our memory is the strongest of the memory architectures under the primary protocol and on FinMem's own stocks, with lower drawdown, but the improvement is not statistically significant, the predictive content of news memory is close to zero, and buy-and-hold and a price-only model are better over this period. Results also depend strongly on the evaluation protocol and on $K$, which supports rigorous walk-forward evaluation for LLM trading agents. The extension experiments confirm these conclusions with other model families: a small Transformer on price features is competitive with buy-and-hold and LightGBM, adding news-memory features hurts it as it hurts LightGBM, a Q-learning agent mostly learns to stay invested, and an apparently strong chart-pattern result is fragile across settings. CAPM, leave-one-out and regime analyses show that the memory comparison is not driven by Tesla and that the gap to buy-and-hold is largely explained by market exposure, while a power analysis shows that about $\powerYears$ years of data would be needed to establish the observed edge statistically.

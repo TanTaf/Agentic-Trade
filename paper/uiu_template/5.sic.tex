@@ -1,0 +1,141 @@
+\chapter{Standards and Design Constraints}
+\label{ch:sic}
+
+This chapter lists the standards our design complies with, the constraints that shaped it, a cost analysis with an alternative budget, and the mapping of the project to complex engineering problem and activity attributes.
+
+\section{Compliance with the Standards}
+
+\subsection{Software Standards}
+\begin{itemize}
+  \item \textbf{Python PEP~8 / PEP~484}: code style and type hints throughout the package; alternatives (no style guide, or a different language) would reduce readability for future students.
+  \item \textbf{ISO/IEC/IEEE 29119 (software testing)} principles: requirement-linked unit and integration tests (\testcount{} automated tests, run before each commit), including tests that encode the no-look-ahead requirement.
+  \item \textbf{Semantic versioning and packaging (PEP~621)}: the project is an installable package with declared dependencies and console entry points.
+  \item \textbf{Reproducible research practice}: versioned data, fixed random seeds, cached LLM responses keyed by prompt hash, and scripts that regenerate every table and figure. The alternative of reporting hand-copied numbers was rejected because it is error-prone.
+\end{itemize}
+
+\subsection{Hardware Standards}
+The system runs on commodity x86-64 hardware and needs no GPU; inference uses CPU builds of PyTorch. This was preferred over GPU-dependent pipelines because it keeps the project reproducible on student laptops.
+
+\subsection{Communication Standards}
+\begin{itemize}
+  \item \textbf{HTTP/1.1 over TLS (HTTPS)} and \textbf{REST with JSON (RFC~8259)} for all external APIs (Alpaca, SEC EDGAR, Groq, OpenRouter) and for the application's own API.
+  \item \textbf{OpenAI-compatible chat-completions schema} for LLM providers, which lets the same client address several providers; provider-specific SDKs were avoided to keep backbones interchangeable.
+  \item \textbf{SEC EDGAR fair-access policy}: requests identify the client in the User-Agent header and respect rate limits.
+  \item \textbf{ISO~8601} dates and \textbf{IANA time zones} (America/New\_York) for point-in-time alignment.
+  \item \textbf{Same-origin policy and CORS (Fetch standard)}: endpoints that read or change API keys and trading controls check the request's \texttt{Origin} and \texttt{Host} headers and only accept the local machine.
+\end{itemize}
+
+\subsection{Usability and Accessibility Standards}
+\begin{itemize}
+  \item \textbf{WCAG~2.1 principles}: colour is never the only carrier of meaning (signs, labels and icons accompany green/red), interactive elements have accessible names, focus is visible, and both a light and a dark theme are offered.
+  \item \textbf{Unicode and localisation}: the whole interface is available in English and Bangla (UTF-8, Bengali script with a Bengali web font); numbers keep Latin digits so that prices are unambiguous.
+  \item \textbf{Responsive design}: the layout adapts from desktop to phone width (sidebar becomes a bottom navigation bar).
+\end{itemize}
+
+\section{Design Constraints}
+\subsection{Economic Constraint}
+The project had no budget for paid data or inference. We therefore used Alpaca's free news and market data, SEC EDGAR, open encoders (FinBERT, MiniLM) and free LLM tiers. The free tiers limit the LLM experiment (on Groq, 8{,}000 tokens per minute and 200{,}000 tokens per day per model and account; on OpenRouter, 50 free-model requests per day per account), which is why it covers five stocks and 50 sessions with a single trial per model and three backbones.
+
+\subsection{Environmental Constraint}
+Running small open encoders on a CPU once and caching their outputs uses far less energy than sending every article to a large hosted LLM. LLM calls are cached so that re-running analyses consumes no additional inference.
+
+\subsection{Ethical Constraint}
+The system is a research and decision-support tool, not financial advice. It reports negative and non-significant results explicitly, separates post-hoc variants from pre-specified ones, and the application displays the study's limitations next to its recommendations. News content is used only as headline-level text for research; full articles are not redistributed.
+
+\subsection{Health and Safety Constraint}
+Automated trading can cause financial harm. Paper trading is the default; live trading requires both a command-line flag and an environment confirmation. When the agent is allowed to act autonomously, every order passes one server-side guardrail with user-defined hard limits (budget, cash reserve, per-stock and per-order caps, daily-loss and drawdown limits, trades per day); the default permission mode requires the user's approval for each trade; switching to fully automatic mode shows an explicit warning that our research found the signals weak; and an emergency stop pauses the agent, cancels pending orders and can close all positions.
+
+\subsection{Social Constraint}
+Over-confident trading tools can encourage retail investors to take excessive risk. The interface therefore shows confidence capped at 60\%, highlights disagreement between models, links each decision to the evidence it relies on, shows every algorithm's out-of-sample track record next to its current advice, and explains metrics in plain language in English and Bangla so that users who are not finance specialists can judge the risk.
+
+\subsection{Political Constraint}
+Data providers' terms of service and securities regulation constrain use. We use data only within the providers' terms, do not execute live trades by default and make no claims of guaranteed returns.
+
+\subsection{Sustainability}
+The modular design (data, memory, policies, evaluation, application) lets future students replace components, add tickers or data sources, and re-run the full study with a few commands. Incremental refresh keeps the dataset current without re-downloading or re-annotating history.
+
+\section{Cost Analysis}
+\begin{table}[H]
+\centering
+\caption{Budget used and an alternative (paid) budget for a comparable study.}
+\label{tab:cost}
+\begin{tabular}{lrr}
+\hline
+Item & Used (USD) & Alternative (USD) \\
+\hline
+News and market data (Alpaca free / paid SIP) & 0 & 99 per month \\
+SEC filings (EDGAR) & 0 & 0 \\
+Annotation (FinBERT, MiniLM on CPU / GPT-4-class API) & 0 & $\approx$ 50--150 \\
+LLM decisions (free tiers / paid API, 3 models) & 0 & $\approx$ 20--60 \\
+Cloud compute (laptop / small cloud VM) & 0 & $\approx$ 30 per month \\
+\hline
+Total for the study & 0 & $\approx$ 200--350 \\
+\hline
+\end{tabular}
+\end{table}
+The alternative budget would remove the free-tier limits (more LLM trials, larger universes, full filing text) and is the recommended path for extending the work. A possible revenue model for the application is a subscription for analysts who want inspectable, evidence-linked news monitoring, with live-trading integration offered only to licensed users.
+
+\section{Complex Engineering Problem}
+\subsection{Complex Problem Solving}
+\begin{table}[H]
+\centering
+\caption{Mapping with complex problem solving.}
+\label{tab:p_solve}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{|*{7}{C{0.105\textwidth}|}}
+\hline
+P1 & P2 & P3 & P4 & P5 & P6 & P7\\
+Depth of Knowledge & Range of Conflicting Require\-ments & Depth of Analysis & Familiarity of Issues & Extent of Applicable Codes & Extent of Stakeholder Involvement & Inter\-dependence\\
+\hline
+$\surd$ & $\surd$ & $\surd$ & $\surd$ & & & $\surd$\\
+\hline
+\end{tabular}
+\end{table}
+\paragraph{P1 Depth of knowledge.} The project requires knowledge of NLP (transformers, embeddings), information retrieval, LLM agents, financial markets and microstructure (point-in-time data, costs), machine learning and non-parametric statistics. Table~\ref{tab:k_profile} maps it to the knowledge profiles.
+\begin{table}[H]
+\centering
+\caption{Mapping of P1 with the knowledge profiles.}
+\label{tab:k_profile}
+\small
+\begin{tabular}{|p{0.08\textwidth}|p{0.3\textwidth}|p{0.52\textwidth}|}
+\hline
+Profile & Attribute & Rationale in this project \\
+\hline
+K2 & Mathematics, statistics and computing & Decay and scoring functions, Beta--Bernoulli credibility, Wilcoxon, Holm, Diebold--Mariano, block bootstrap, CAPM regression and power analysis \\
+K3 & Engineering fundamentals & Data structures for the memory store, algorithm design of the day-major replay, software architecture of package and application \\
+K4 & Specialist knowledge & Transformer encoders (FinBERT, MiniLM), retrieval-augmented LLM agents, GRU/Transformer forecasting, Q-learning, financial markets \\
+K5 & Engineering design & Design of the seven memory components, the evaluation protocols and the safe-autonomy guardrail \\
+K6 & Engineering practice & Automated testing, reproducible pipelines, REST APIs of data, LLM and broker providers, credential handling \\
+K7 & Engineering in society & Financial risk to users, honest reporting of negative results, paper trading by default, human approval \\
+K8 & Research literature & Re-evaluation of FinMem and related LLM-agent, memory and back-testing literature \\
+\hline
+\end{tabular}
+\end{table}
+\paragraph{P2 Conflicting requirements.} Realism versus cost (free tiers), responsiveness versus rigour (incremental refresh versus full replay), and autonomy versus safety (agent decisions versus human approval).
+\paragraph{P3 Depth of analysis.} No closed-form solution exists; designs were compared through controlled ablations, two protocols, sensitivity analyses and significance tests.
+\paragraph{P4 Familiarity of issues.} Look-ahead bias, selection bias and regime dependence are subtle, uncommon issues that invalidate many published back-tests and had to be identified and controlled.
+\paragraph{P7 Inter\-dependence.} Data alignment, annotation, memory, policies, evaluation and the application depend on one another; a timing error in one stage silently corrupts all later results.
+
+\subsection{Engineering Activities}
+\begin{table}[H]
+\centering
+\caption{Mapping with complex engineering activities.}
+\label{tab:e_act}
+\small
+\begin{tabular}{|*{5}{C{0.16\textwidth}|}}
+\hline
+A1 & A2 & A3 & A4 & A5\\
+Range of resources & Level of Interaction & Innovation & Consequences for society and environment & Familiarity\\
+\hline
+$\surd$ & $\surd$ & $\surd$ & $\surd$ & \\
+\hline
+\end{tabular}
+\end{table}
+\paragraph{A1 Range of resources.} Four external services, pretrained models, open-source libraries and a team of five.
+\paragraph{A2 Level of interaction.} The system interacts with data providers, LLM providers, a broker and the user, and the user remains in the loop for every order.
+\paragraph{A3 Innovation.} Seven new memory components and a stricter evaluation protocol for LLM trading agents.
+\paragraph{A4 Consequences.} Automated trading advice can affect users' finances; safety guards, transparency and honest reporting address this.
+
+\section{Summary}
+The design follows software, communication and data-access standards, is shaped by economic, ethical and safety constraints, was completed at zero monetary cost, and addresses a complex engineering problem across several knowledge areas.
